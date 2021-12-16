@@ -38,6 +38,11 @@ public interface Vector<T extends Vector<T>> extends FloatData {
 	}
 
 	@CheckReturnValue
+	public default boolean isZero() {
+		return lengthSquared() == 0f;
+	}
+
+	@CheckReturnValue
 	public default float distanceSquared(T vector) {
 		return this.subtract(vector).lengthSquared();
 	}
@@ -59,7 +64,11 @@ public interface Vector<T extends Vector<T>> extends FloatData {
 
 	@CheckReturnValue
 	public default T normalize() {
-		return this.divide(this.length());
+		var length = this.length();
+		if (length == 0f) {
+			throw new IllegalStateException("Cannot scale a vector with length 0");
+		}
+		return this.divide(length);
 	}
 
 	@CheckReturnValue
@@ -79,5 +88,9 @@ public interface Vector<T extends Vector<T>> extends FloatData {
 	@CheckReturnValue
 	public default boolean hasNaN() {
 		return Float.isNaN(lengthSquared());
+	}
+
+	public static <T extends Vector<T>> boolean isEqual(Vector<T> a, Vector<T> b, float delta) {
+		return a.subtract((T) b).lengthSquared() <= delta * delta;
 	}
 }

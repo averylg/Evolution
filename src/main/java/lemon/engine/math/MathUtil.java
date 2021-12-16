@@ -5,6 +5,7 @@ import org.lwjgl.BufferUtils;
 import org.lwjgl.glfw.GLFW;
 
 import java.nio.IntBuffer;
+import java.util.List;
 import java.util.function.Supplier;
 
 public class MathUtil {
@@ -51,6 +52,10 @@ public class MathUtil {
 				(float) (-(Math.sin(rotation.y()) * cosX)),
 				(float) (Math.sin(rotation.x())),
 				(float) (-(cosX * Math.cos(rotation.y()))));
+	}
+
+	public static Vector3D getVectorDirectionFromYaw(float yaw) {
+		return Vector3D.of((float) (-Math.sin(yaw)), 0f, (float) (-Math.cos(yaw)));
 	}
 
 	public static Matrix getPerspective(Projection projection) {
@@ -235,9 +240,22 @@ public class MathUtil {
 	}
 
 	public static void lookAt(Matrix matrix, Vector3D direction, Vector3D up) {
+		if (direction.isZero()) {
+			matrix.set(Matrix.IDENTITY_4);
+			return;
+		}
+		if (up.isZero()) {
+			throw new IllegalArgumentException("Up vector cannot be zero");
+		}
 		var f = direction.normalize();
 		var u = up.normalize();
-		var s = f.crossProduct(u).normalize();
+		var s = f.crossProduct(u);
+		while (s.isZero()) {
+			// they're in the same or opposite directions
+			u = Vector3D.ofRandomUnitVector();
+			s = f.crossProduct(u);
+		}
+		s = s.normalize();
 		u = s.crossProduct(f);
 
 		matrix.clear();
@@ -273,5 +291,9 @@ public class MathUtil {
 
 	public static <T> T randomChoice(T[] array) {
 		return array[(int) (Math.random() * array.length)];
+	}
+
+	public static <T> T randomChoice(List<T> list) {
+		return list.get((int) (Math.random() * list.size()));
 	}
 }

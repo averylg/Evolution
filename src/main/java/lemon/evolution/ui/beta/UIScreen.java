@@ -1,5 +1,6 @@
 package lemon.evolution.ui.beta;
 
+import lemon.engine.font.Font;
 import lemon.engine.game.Player;
 import lemon.engine.glfw.GLFWInput;
 import lemon.engine.math.Box2D;
@@ -7,8 +8,6 @@ import lemon.engine.math.Vector2D;
 import lemon.engine.render.Renderable;
 import lemon.engine.texture.Texture;
 import lemon.engine.toolbox.Color;
-import lemon.evolution.UIMinimap;
-import lemon.evolution.world.ControllableEntity;
 import lemon.evolution.world.Inventory;
 import lemon.evolution.world.World;
 
@@ -59,6 +58,23 @@ public class UIScreen extends AbstractUIComponent {
 
 	public UIInventory addInventory(Inventory inventory) {
 		return addComponent(new UIInventory(this, inventory));
+	}
+
+	public UIText addText(String text, Vector2D position, float scale, Color color) {
+		return addComponent(new UIText(this, text, position, scale, color));
+	}
+
+	public UIText addCenteredText(Font font, String text, Vector2D position, float scale, Color color) {
+		return addComponent(UIText.ofCentered(this, font, text, position, scale, color));
+	}
+
+	public UIPlayerInfo addPlayerInfo(Box2D box, Player player) {
+		var level = ((int) (Math.random() * 9)) + 1;
+		return addPlayerInfo(box, player.name(), "Lvl. " + level, player.team().color(), player::healthAsPercentage);
+	}
+
+	public UIPlayerInfo addPlayerInfo(Box2D box, String name, String info, Color color, Supplier<Float> healthGetter) {
+		return addComponent(new UIPlayerInfo(this, box, name, info, color, healthGetter));
 	}
 
 	@Override

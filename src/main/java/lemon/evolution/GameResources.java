@@ -4,6 +4,7 @@ import com.google.common.collect.ImmutableMap;
 import lemon.engine.control.GLFWWindow;
 import lemon.engine.draw.Drawable;
 import lemon.engine.game.Player;
+import lemon.engine.math.AggregateCamera;
 import lemon.engine.math.MathUtil;
 import lemon.engine.math.Matrix;
 import lemon.engine.math.Vector3D;
@@ -25,7 +26,7 @@ import java.util.function.Consumer;
 
 public class GameResources {
     private final ImmutableMap<String, Consumer<ObjLoader>> objLoaders;
-    public GameResources(GLFWWindow window, WorldRenderer worldRenderer, GameLoop gameLoop, GLFWGameControls<EvolutionControls> controls) {
+    public GameResources(GLFWWindow window, WorldRenderer worldRenderer, GameLoop gameLoop, GLFWGameControls<EvolutionControls> controls, AggregateCamera camera) {
         this.gameLoop = gameLoop;
         var entityRenderer = worldRenderer.entityRenderer();
         var builder = ImmutableMap.<String, Consumer<ObjLoader>>builder();
@@ -98,14 +99,18 @@ public class GameResources {
                     };
                     entityRenderer.registerIndividual(ExplodeOnHitProjectile.class, entity -> entity.isType(ExplodeType.MISSILE), renderer);
                     entityRenderer.registerIndividual(ExplodeOnHitProjectile.class, entity -> entity.isType(ExplodeType.MINI_MISSILE), renderer);
+                    entityRenderer.registerIndividual(ExplodeOnHitProjectile.class, entity -> entity.isType(ExplodeType.NUKE), renderer);
                     entityRenderer.registerIndividual(MissileShowerEntity.class, renderer);
                 });
         builder.put("/res/fox.obj",
                 objLoader -> {
                     var drawable = objLoader.toIndexedDrawable();
                     entityRenderer.registerCollection(Player.class, players -> {
+                        var x = camera.camera() == gameLoop.currentPlayer().camera();
+                        var y = camera.camera();
+                        var z = gameLoop.currentPlayer().camera();
                         for (var player : players) {
-                            if (player != gameLoop.currentPlayer() || controls.isActivated(EvolutionControls.FREECAM)) {
+                            if (player != gameLoop.currentPlayer() || camera.camera() != gameLoop.currentPlayer().camera()) {
                                 GL11.glEnable(GL11.GL_DEPTH_TEST);
                                 CommonPrograms3D.LIGHT.use(program -> {
                                     program.loadColor4f("filterColor", player.team().color());
@@ -128,7 +133,7 @@ public class GameResources {
         builder.put("/res/crate.obj",
                 objLoader -> {
                     var drawable = objLoader.toIndexedDrawable();
-                    var crateRenderer = getGenericRenderer(drawable);
+                    var crateRenderer = getGenericRenderer(drawable, Color.BROWN);
                     entityRenderer.registerIndividual(StaticEntity.class,
                             entity -> entity.isType(StaticEntity.Type.CRATE),
                             crateRenderer);
@@ -149,7 +154,16 @@ public class GameResources {
     public Consumer<Entity> getGenericRenderer(Drawable drawable) {
         return getGenericRenderer(drawable, Vector3D.ZERO, 1f);
     }
+
+    public Consumer<Entity> getGenericRenderer(Drawable drawable, Color color) {
+        return getGenericRenderer(drawable, Vector3D.ZERO, 1f, color);
+    }
+
     public Consumer<Entity> getGenericRenderer(Drawable drawable, Vector3D offset, float scale) {
+        return getGenericRenderer(drawable, offset, scale, Color.WHITE);
+    }
+
+    public Consumer<Entity> getGenericRenderer(Drawable drawable, Vector3D offset, float scale, Color filterColor) {
         return entity -> {
             GL11.glEnable(GL11.GL_DEPTH_TEST);
             CommonPrograms3D.LIGHT.use(program -> {
@@ -160,7 +174,9 @@ public class GameResources {
                     program.loadVector("sunlightDirection", sunlightDirection);
                     program.loadVector("viewPos", gameLoop.currentPlayer().position());
                 }
+                program.loadColor4f("filterColor", filterColor);
                 drawable.draw();
+                program.loadColor4f("filterColor", Color.WHITE);
             });
             GL11.glDisable(GL11.GL_DEPTH_TEST);
         };

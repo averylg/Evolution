@@ -15,6 +15,8 @@ public record Color(float red, float green, float blue, float alpha) implements 
 	public static final Color GRAY = new Color(0.5f, 0.5f, 0.5f);
 	public static final Color ORANGE = new Color(1f, 0.5f, 0f);
 	public static final Color PURPLE = new Color(0.5f, 0f, 1f);
+	public static final Color BROWN = Color.fromHex("#4E3524");
+	public static final Color CLEAR = new Color(0f, 0f, 0f, 0f);
 
 	public Color() {
 		this(1f);
@@ -84,7 +86,43 @@ public record Color(float red, float green, float blue, float alpha) implements 
 		return alpha;
 	}
 
+	public boolean isClear() {
+		return alpha == 0f;
+	}
+
+	public float r() {
+		return red;
+	}
+
+	public float g() {
+		return green;
+	}
+
+	public float b() {
+		return blue;
+	}
+
+	public float a() {
+		return alpha;
+	}
+
 	public Color brighter() {
 		return new Color(Math.min(red * 1.4f, 1f), Math.min(green * 1.4f, 1f), Math.min(blue * 1.4f, 1f), alpha);
+	}
+
+	public static Color fromHex(String hex) {
+		if (hex.charAt(0) == '#') {
+			return new Color(
+					Integer.valueOf(hex.substring(1, 3), 16) / 255f,
+					Integer.valueOf(hex.substring(3, 5), 16) / 255f,
+					Integer.valueOf(hex.substring(5, 7), 16) / 255f
+			);
+		} else {
+			return new Color(
+					Integer.valueOf(hex.substring(0, 2), 16) / 255f,
+					Integer.valueOf(hex.substring(2, 4), 16) / 255f,
+					Integer.valueOf(hex.substring(4, 6), 16) / 255f
+			);
+		}
 	}
 }

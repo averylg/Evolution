@@ -5,18 +5,14 @@ import lemon.engine.control.GLFWWindow;
 import lemon.engine.control.Loader;
 import lemon.engine.draw.CommonDrawables;
 import lemon.engine.draw.IndexedDrawable;
+import lemon.engine.draw.TextModel;
+import lemon.engine.event.Observable;
+import lemon.engine.font.CommonFonts;
 import lemon.engine.frameBuffer.FrameBuffer;
 import lemon.engine.game.Player;
 import lemon.engine.game.Team;
 import lemon.engine.glfw.GLFWInput;
-import lemon.engine.math.Box2D;
-import lemon.engine.math.Camera;
-import lemon.engine.math.MathUtil;
-import lemon.engine.math.Matrix;
-import lemon.engine.math.MutableVector3D;
-import lemon.engine.math.Projection;
-import lemon.engine.math.Vector2D;
-import lemon.engine.math.Vector3D;
+import lemon.engine.math.*;
 import lemon.engine.model.LineGraph;
 import lemon.engine.model.Model;
 import lemon.engine.model.SphereModelBuilder;
@@ -31,11 +27,13 @@ import lemon.engine.toolbox.GLState;
 import lemon.engine.toolbox.SkyboxLoader;
 import lemon.engine.toolbox.TaskQueue;
 import lemon.engine.toolbox.Toolbox;
+import lemon.evolution.audio.BackgroundAudio;
 import lemon.evolution.destructible.beta.ScalarField;
 import lemon.evolution.destructible.beta.Terrain;
 import lemon.evolution.destructible.beta.TerrainChunk;
 import lemon.evolution.destructible.beta.TerrainGenerator;
 import lemon.evolution.entity.*;
+import lemon.evolution.item.BasicItems;
 import lemon.evolution.particle.beta.ParticleSystem;
 import lemon.evolution.physics.beta.CollisionContext;
 import lemon.evolution.pool.MatrixPool;
@@ -69,10 +67,12 @@ import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.logging.Logger;
 
 public class Game implements Screen {
@@ -87,9 +87,8 @@ public class Game implements Screen {
 	private GLFWGameControls<EvolutionControls> controls;
 	private GameLoop gameLoop;
 
-	private Camera freecam;
-	private float lastMouseX;
-	private float lastMouseY;
+	private AggregateCamera camera;
+	private FreeCamera freecam;
 
 	private FrameBuffer frameBuffer;
 
@@ -114,19 +113,24 @@ public class Game implements Screen {
 
 	private final Disposables disposables = new Disposables();
 
-	private ScalarField<Vector3D> scalarfield;
 	private int resolutionWidth;
 	private int resolutionHeight;
+	private MapInfo map;
 
-	public Game(ScalarField<Vector3D> scalarfield, int resolutionWidth, int resolutionHeight) {
-		this.scalarfield = scalarfield;
+	private Map<String, TextModel> cachedTextModels = new HashMap<>();
+
+	public Game(int resolutionWidth, int resolutionHeight, MapInfo map) {
 		this.resolutionWidth = resolutionWidth;
 		this.resolutionHeight = resolutionHeight;
+		this.map = map;
 	}
 
 	@Override
 	public void onLoad(GLFWWindow window) {
 		if (!loaded) {
+			// Music
+			BackgroundAudio.play(BackgroundAudio.Track.COMBAT);
+			disposables.add(() -> BackgroundAudio.play(BackgroundAudio.Track.MENU));
 			// Prepare loaders
 			ScalarField<Vector3D> scalarField = vector -> -1f;
 			pool = (ThreadPoolExecutor) Executors.newFixedThreadPool(1);
@@ -153,7 +157,7 @@ public class Game implements Screen {
 					}
 				}
 			};
-			world = disposables.add(new World(terrain, collisionContext));
+			world = disposables.add(new World(terrain, collisionContext, map));
 			worldRenderer = disposables.add(new WorldRenderer(world));
 
 			var entityRenderer = worldRenderer.entityRenderer();
@@ -181,8 +185,9 @@ public class Game implements Screen {
 			entityRenderer.registerIndividual(PuzzleBall.class, sphereRenderer);
 			entityRenderer.registerIndividual(ExplodeOnTimeProjectile.class, entity -> entity.isType(ExplodeType.GRENADE), sphereRenderer);
 			entityRenderer.registerIndividual(ExplodeOnHitProjectile.class, entity -> entity.isType(ExplodeType.RAIN_DROPLET), sphereRenderer);
+			entityRenderer.registerIndividual(TeleportBallEntity.class, sphereRenderer);
 
-			var csvLoader = new CsvWorldLoader("/res/SkullIsland.csv", world.terrain(), postLoadTasks::add,
+			var csvLoader = new CsvWorldLoader("/res/" + map.csvPath(), world.terrain(), postLoadTasks::add,
 					csvWorldLoader -> {
 						var mapping = csvWorldLoader.blockMapping();
 						var materials = new MCMaterial[mapping.size()];
@@ -204,31 +209,39 @@ public class Game implements Screen {
 						TextureBank.TERRAIN.bind(() -> {
 							GL11.glBindTexture(GL30.GL_TEXTURE_2D_ARRAY, textureArray.id());
 						});
+						logger.info(csvWorldLoader.materialCount().entrySet().stream()
+								.filter(entry -> !entry.getKey().isEmpty() && entry.getKey().textureFile().isEmpty()).toList().toString());
 					});
 
 			this.controls = disposables.add(GLFWGameControls.getDefaultControls(window.input(), EvolutionControls.class));
 			var projection = new Projection(MathUtil.toRadians(60f),
 					((float) window.getWidth()) / ((float) window.getHeight()), 0.01f, 1000f);
+
+			var namesList = new NamesList("/res/names.txt");
+
 			var playersBuilder = new ImmutableList.Builder<Player>();
 			int numPlayers = 6;
 			for (int i = 0; i < numPlayers; i++) {
-				var distance = 25f;
+				var distance = map.playerSpawnRadius();
 				var angle = MathUtil.TAU * ((float) i) / numPlayers;
 				var cos = (float) Math.cos(angle);
 				var sin = (float) Math.sin(angle);
-				var player = disposables.add(new Player("Player " + (i + 1), Team.values()[i % Team.values().length], new Location(world, Vector3D.of(distance * cos, 100f, distance * sin)), projection));
+				var player = disposables.add(new Player(namesList.random(), Team.values()[i % Team.values().length], new Location(world, Vector3D.of(distance * cos, 100f, distance * sin)), projection));
 				player.mutableRotation().setY(-angle + MathUtil.PI / 2);
 				playersBuilder.add(player);
 			}
 			var players = playersBuilder.build();
 			world.entities().addAll(players);
 			world.entities().flush();
-			gameLoop = disposables.add(new GameLoop(world, players, controls));
+			gameLoop = disposables.add(new GameLoop(map, world, players, controls));
 			disposables.add(gameLoop.onWinner(player -> {
+				logger.info(player.team() + " won");
 				window.popAndPushScreen(Menu.INSTANCE);
 			}));
 
-			resources = new GameResources(window, worldRenderer, gameLoop, controls);
+			camera = new AggregateCamera(gameLoop.currentPlayer().camera());
+			freecam = new FreeCamera(camera, controls);
+			resources = new GameResources(window, worldRenderer, gameLoop, controls, camera);
 
 			window.pushScreen(new Loading(window::popScreen, resources.loaders(postLoadTasks::add),
 					new Loader() {
@@ -300,9 +313,28 @@ public class Game implements Screen {
 
 			debugOverlay = disposables.add(new DebugOverlay(window, benchmarker));
 
+			disposables.add(gameLoop.observableCurrentPlayer().onChange(player -> {
+				camera.interpolateTo(player.camera());
+			}));
+			disposables.add(controls.activated(EvolutionControls.FREECAM).onChangeTo(true, () -> {
+				if (camera.camera() == freecam) {
+					camera.interpolateTo(gameLoop.currentPlayer().camera());
+				} else {
+					freecam.setPositionAndRotation(gameLoop.currentPlayer().camera());
+					camera.set(freecam);
+				}
+			}));
+			var observableNotInControl = new Observable<>(false);
+			disposables.add(camera.observableCamera().onChangeAndRun(camera -> {
+				var inControl = camera == gameLoop.currentPlayer().camera();
+				observableNotInControl.setValue(!inControl);
+				viewModel.setVisible(inControl);
+			}));
+			disposables.add(gameLoop.getGatedControls().gate().addInput(observableNotInControl));
+
 			Matrix orthoProjectionMatrix = MathUtil.getOrtho(windowWidth, windowHeight, -1, 1);
 			CommonProgramsSetup.setup2D(orthoProjectionMatrix);
-			CommonProgramsSetup.setup3D(gameLoop.currentPlayer().camera().getProjectionMatrix());
+			CommonProgramsSetup.setup3D(camera.projectionMatrix());
 
 			updateMatrices();
 
@@ -330,7 +362,7 @@ public class Game implements Screen {
 			});
 			TextureBank.SKYBOX.bind(() -> {
 				Texture skyboxTexture = new Texture();
-				skyboxTexture.load(new SkyboxLoader("/res/darkskies", "darkskies.cfg").load());
+				skyboxTexture.load(new SkyboxLoader("/res/" + map.skyboxInfo().directoryPath()).load());
 				GL11.glBindTexture(GL13.GL_TEXTURE_CUBE_MAP, skyboxTexture.id());
 			});
 			Map.of(
@@ -368,8 +400,12 @@ public class Game implements Screen {
 							}
 						}
 					}
-					if (event.key() == GLFW.GLFW_KEY_R) {
-						world.entities().add(new StaticEntity(gameLoop.currentPlayer().location(), MathUtil.randomChoice(StaticEntity.Type.values())));
+					if (event.key() == GLFW.GLFW_KEY_L) {
+						for (var player : gameLoop.players()) {
+							for (var item : BasicItems.values()) {
+								player.inventory().addItems(item, 100);
+							}
+						}
 					}
 					if (event.key() == GLFW.GLFW_KEY_T) {
 						world.entities().add(new ItemDropEntity(gameLoop.currentPlayer().location().add(Vector3D.of(0f, 100f, 0f))));
@@ -377,20 +413,21 @@ public class Game implements Screen {
 				}
 			}));
 
-			disposables.add(controls.activated(EvolutionControls.FREECAM).onChangeTo(true, () -> {
-				gameLoop.getGatedControls().setEnabled(false);
-				freecam = new Camera(gameLoop.currentPlayer().camera());
-				viewModel.setVisible(false);
-			}));
-			disposables.add(controls.activated(EvolutionControls.FREECAM).onChangeTo(false, () -> {
-				gameLoop.getGatedControls().setEnabled(true);
-				viewModel.setVisible(true);
-			}));
-
 			uiScreen = disposables.add(new UIScreen(window.input()));
 			disposables.add(controls.activated(EvolutionControls.SHOW_UI).onChangeAndRun(activated -> uiScreen.visible().setValue(activated)));
 
-			var progressBar = uiScreen.addProgressBar(new Box2D(10f, 10f, windowWidth - 20f, 25f), () -> {
+			var minimap = uiScreen.addMinimap(new Box2D(50f, windowHeight - 250f, 200f, 200f), world, () -> gameLoop.currentPlayer());
+			disposables.add(controls.activated(EvolutionControls.MINIMAP).onChangeAndRun(visible -> {
+				minimap.visible().setValue(visible);
+			}));
+
+			var playerInfoHeight = 35f;
+			for (int i = 0; i < gameLoop.players().size(); i++) {
+				var player = gameLoop.players().get(i);
+				uiScreen.addPlayerInfo(new Box2D(50f, windowHeight - 250f - (i + 1) * (playerInfoHeight + 5f), 180f, playerInfoHeight), player);
+			}
+
+			Supplier<Float> progressGetter = () -> {
 				if (gameLoop.startTime != null && gameLoop.endTime != null) {
 					float progressedTime = Duration.between(gameLoop.startTime, Instant.now()).toMillis();
 					float totalTime = Duration.between(gameLoop.startTime, gameLoop.endTime).toMillis();
@@ -398,27 +435,25 @@ public class Game implements Screen {
 				} else {
 					return 0f;
 				}
-			});
-			disposables.add(gameLoop.started().onChangeAndRun(started -> progressBar.visible().setValue(started)));
+			};
+			var bottomInfoHeight = 35f;
+			var bottomInfoMargin = 10f;
+			var powerMeterWidth = 180f;
+			var progressBox = new Box2D(bottomInfoMargin, bottomInfoMargin, windowWidth - 3f * bottomInfoMargin - powerMeterWidth, bottomInfoHeight);
+			var progressInfo = uiScreen.addPlayerInfo(progressBox, "Turn Timer", " ", Color.RED, progressGetter);
 
-			var powerMeterProgressBar = uiScreen.addProgressBar(new Box2D(windowWidth - 30f, 45f, 20f, 150f),
-					() -> gameLoop.controller().powerMeter(), UIProgressBar.ProgressDirection.UP);
+			var powerMeterBox = new Box2D(windowWidth - powerMeterWidth - bottomInfoMargin, bottomInfoMargin, powerMeterWidth, bottomInfoHeight);
+			var powerMeterInfo = uiScreen.addPlayerInfo(powerMeterBox, "Power Meter", " ", Color.RED, () -> gameLoop.controller().powerMeter());
+
+			disposables.add(gameLoop.started().onChangeAndRun(started -> {
+				progressInfo.visible().setValue(started);
+				powerMeterInfo.visible().setValue(started);
+			}));
 			disposables.add(gameLoop.observableCurrentPlayer().onChangeAndRun(player -> {
 				var color = player.team().color();
-				progressBar.setColor(color);
-				powerMeterProgressBar.setColor(color);
+				progressInfo.progressBar().setColor(color);
+				powerMeterInfo.progressBar().setColor(color);
 			}));
-
-			var minimap = uiScreen.addMinimap(new Box2D(50f, windowHeight - 250f, 200f, 200f), world, () -> gameLoop.currentPlayer());
-			disposables.add(controls.activated(EvolutionControls.MINIMAP).onChangeAndRun(visible -> {
-				minimap.visible().setValue(visible);
-			}));
-
-			for (int i = 0; i < gameLoop.players().size(); i++) {
-				var player = gameLoop.players().get(i);
-				uiScreen.addProgressBar(new Box2D(50f, windowHeight - 280f - i * 30f, 100f, 15f),
-						() -> player.health().getValue() / Player.START_HEALTH).setColor(player.team().color());
-			}
 
 			var uiInventory = uiScreen.addInventory(gameLoop.currentPlayer().inventory());
 			uiInventory.visible().setValue(false);
@@ -430,14 +465,15 @@ public class Game implements Screen {
 			// sets up inventory toggle
 			disposables.add(controls.onActivated(EvolutionControls.TOGGLE_INVENTORY, () -> {
 				uiInventory.visible().setValue(!uiInventory.visible().getValue());
-				if (uiInventory.isVisible()) {
+			}));
+			disposables.add(uiInventory.visible().onChangeAndRun(visible -> {
+				if (visible) {
 					GLFW.glfwSetInputMode(GLFW.glfwGetCurrentContext(), GLFW.GLFW_CURSOR, GLFW.GLFW_CURSOR_NORMAL);
-					gameLoop.getGatedControls().setEnabled(false);
 				} else {
 					GLFW.glfwSetInputMode(GLFW.glfwGetCurrentContext(), GLFW.GLFW_CURSOR, GLFW.GLFW_CURSOR_DISABLED);
-					gameLoop.getGatedControls().setEnabled(true);
 				}
 			}));
+			disposables.add(gameLoop.getGatedControls().gate().addInput(uiInventory.visible()));
 
 			controls.onActivated(EvolutionControls.SCREENSHOT, () -> {
 				try {
@@ -468,46 +504,7 @@ public class Game implements Screen {
 		world.update(dt);
 
 		gameLoop.update();
-		if (controls.isActivated(EvolutionControls.FREECAM)) {
-			float MOUSE_SENSITIVITY = .001f;
-			controls.addCallback(GLFWInput::cursorPositionEvent, event -> {
-				if (controls.isActivated(EvolutionControls.CAMERA_ROTATE)) {
-					float deltaY = (float) (-(event.x() - lastMouseX) * MOUSE_SENSITIVITY);
-					float deltaX = (float) (-(event.y() - lastMouseY) * MOUSE_SENSITIVITY);
-					freecam.mutableRotation().asXYVector().add(deltaX, deltaY)
-							.clampX(-MathUtil.PI / 2f, MathUtil.PI / 2f).modY(MathUtil.TAU);
-				}
-				lastMouseX = (float) event.x();
-				lastMouseY = (float) event.y();
-			});
-
-			float speed = .5f;
-			float angle = (freecam.rotation().y() + MathUtil.PI / 2f);
-			float sin = (float) Math.sin(angle);
-			float cos = (float) Math.cos(angle);
-			var playerHorizontalVector = Vector2D.of(speed * sin, speed * cos);
-			var mutableForce = MutableVector3D.ofZero();
-			if (controls.isActivated(EvolutionControls.STRAFE_LEFT)) {
-				mutableForce.asXZVector().subtract(playerHorizontalVector);
-			}
-			if (controls.isActivated(EvolutionControls.STRAFE_RIGHT)) {
-				mutableForce.asXZVector().add(playerHorizontalVector);
-			}
-			var playerForwardVector = Vector2D.of(speed * cos, -speed * sin);
-			if (controls.isActivated(EvolutionControls.MOVE_FORWARDS)) {
-				mutableForce.asXZVector().add(playerForwardVector);
-			}
-			if (controls.isActivated(EvolutionControls.MOVE_BACKWARDS)) {
-				mutableForce.asXZVector().subtract(playerForwardVector);
-			}
-			if (controls.isActivated(EvolutionControls.FLY)) {
-				mutableForce.addY(speed);
-			}
-			if (controls.isActivated(EvolutionControls.FALL)) {
-				mutableForce.subtractY(speed);
-			}
-			freecam.mutablePosition().add(mutableForce.asImmutable());
-		}
+		freecam.update();
 
 		benchmarker.getLineGraph("debug").add(totalLength);
 		float current = Runtime.getRuntime().freeMemory();
@@ -537,16 +534,15 @@ public class Game implements Screen {
 	}
 
 	public void updateMatrices() {
-		Camera camera;
-		if (controls.isActivated(EvolutionControls.FREECAM)) {
-			camera = freecam;
-		} else {
-			camera = gameLoop.currentPlayer().camera();
-		}
-		CommonPrograms3D.setMatrices(MatrixType.VIEW_MATRIX, camera.getTransformationMatrix());
-		CommonPrograms3D.setMatrices(MatrixType.PROJECTION_MATRIX, camera.getProjectionMatrix());
+		var position = camera.position();
+		var rotation = camera.rotation();
+		var translationMatrix = MathUtil.getTranslation(position.invert());
+		var rotationMatrix = MathUtil.getRotation(rotation.invert());
+		var transformationMatrix = rotationMatrix.multiply(translationMatrix);
+		CommonPrograms3D.setMatrices(MatrixType.VIEW_MATRIX, transformationMatrix);
+		CommonPrograms3D.setMatrices(MatrixType.PROJECTION_MATRIX, camera.projectionMatrix());
 		CommonPrograms3D.CUBEMAP.use(program -> {
-			CommonPrograms3D.CUBEMAP.loadMatrix(MatrixType.VIEW_MATRIX, camera.getInvertedRotationMatrix());
+			CommonPrograms3D.CUBEMAP.loadMatrix(MatrixType.VIEW_MATRIX, rotationMatrix);
 		});
 	}
 
@@ -569,6 +565,32 @@ public class Game implements Screen {
 			particleSystem.render(gameLoop.currentPlayer().position());
 			particleTime = System.nanoTime() - particleTime;
 			benchmarker.getLineGraph("particleTime").add(particleTime);
+
+			GL11.glEnable(GL11.GL_DEPTH_TEST);
+			for (var player : gameLoop.players()) {
+				if (!player.alive().getValue()) {
+					continue;
+				}
+				var model = cachedTextModels.computeIfAbsent(player.name(), name -> new TextModel(CommonFonts.freeSansTightened(), name));
+				CommonPrograms3D.TEXT.use(program -> {
+					var scale = 0.3f / model.height();
+					var initialTranslation = MathUtil.getTranslation(Vector3D.of(-model.width() / 2f, 0f, 0f));
+					var translation = player.position().add(Vector3D.of(0f, 0.9f, 0f));
+					var translationMatrix = MathUtil.getTranslation(translation);
+					var delta = player.position().subtract(gameLoop.currentPlayer().position());
+					var angle = delta.isZero() ? 0f : ((float) (Math.atan2(-delta.z(), delta.x()) - Math.PI / 2.0));
+					if (player == gameLoop.currentPlayer()) {
+						var scaledTime = (System.currentTimeMillis() % 20000) / 20000.0f;
+						angle = scaledTime * MathUtil.TAU;
+					}
+					var rotationMatrix = MathUtil.getRotationY(angle);
+					var scalarMatrix = MathUtil.getScalar(Vector3D.of(scale, scale, scale));
+
+					program.loadMatrix(MatrixType.MODEL_MATRIX, translationMatrix.multiply(scalarMatrix.multiply(rotationMatrix.multiply(initialTranslation))));
+					model.draw();
+				});
+			}
+			GL11.glDisable(GL11.GL_DEPTH_TEST);
 		});
 		CommonPrograms3D.POST_PROCESSING.use(program -> {
 			CommonDrawables.TEXTURED_QUAD.draw();
